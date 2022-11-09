@@ -1,0 +1,560 @@
+# abrir pacotes
+library(dplyr)
+library(grid)
+library(splancs)
+library(ggplot2)
+library(ggrepel)
+library(readr)
+library(scales)
+library(devtools)
+library(soccermatics)
+library(dplyr)
+library(openxlsx)
+library(factoextra)
+library(Hmisc)
+library(corrplot)
+library(matrixLaplacian)
+library(Rteta)
+library(soccermatics)
+library(readxl)
+library(ggsoccer)
+library(StatsBombR)
+library(SBpitch)
+
+# etapa 1
+
+# Gráfico 3
+
+tabelapremierxGxAformatada %>%
+  ggplot(aes(x = `xG-xGA`, y = position)) +
+  geom_point(aes(size = 3, alpha = 0.5, colour = Squad),stat = "identity") +
+  annotate(geom="text", label = "Wolverhampton", x = -25, y = 9.5, size =4) +
+  labs(x = "xG-xGA", y = "Posição")+
+  geom_smooth(mothod = lm, se = F)+
+  theme_bw()
+
+
+# Gráfico 1
+
+jogadorxgxaformatada %>%
+  ggplot(aes(x = Gls, y = xG)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Pos),stat = "identity") +
+  geom_smooth(mothod = lm, se = F)+
+  annotate(geom="text", label = "de Bruyne", x = 15, y = 6, size =4) +
+  annotate(geom="text", label = "Zaha", x = 14, y = 9, size =4) +
+  annotate(geom="text", label = "Vardy", x = 15, y = 9.1, size =4) +
+  annotate(geom="text", label = "Son", x = 23, y = 15.8, size =4) +
+  labs(x = "Gols", y = "xG")+
+  theme_bw()
+
+# Gráfico 2
+
+jogadorxgxaformatada %>%
+  ggplot(aes(x = Ast, y = xA)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Pos),stat = "identity") +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "Assistências", y = "xA")+
+  theme_bw()
+
+
+# etapa 6
+
+M <- 12 #width
+N <- 16 #length
+
+get_cell_indexes <- function(x, y, l, w)
+{
+  
+  xmin = 0
+  ymin = 0
+  
+  xi = (x - xmin) / 105.0 * l
+  yj = (y - ymin) / 68.0 * w
+  xi <- ceiling(pmax(pmin(xi, l), 1))
+  yj <- ceiling(pmax(pmin(yj, w), 1))
+  
+  return(list(xi, yj))
+}
+
+get_flat_indexes <- function(x,y,l,w)
+{
+  output <- c()
+  indexes <- get_cell_indexes(x, y, l, w)
+  
+  for(i in 1:length(indexes[[1]]))
+  {
+    output <- append(output, w - indexes[[2]][i] + 1 + (12 * (indexes[[1]][i] - 1)))
+  }
+  
+  return(output)
+}
+
+
+count <- function(x,y,l,w)
+{
+  x = x[is.na(x) == FALSE & is.na(y) == FALSE]
+  y = y[is.na(x) == FALSE & is.na(y) == FALSE]
+  
+  flat_indexes = get_flat_indexes(x, y, l, w)
+  vn <- table(flat_indexes)
+  
+  vector <- rep(0, l*w)
+  
+  for(i in 1:(l*w))
+  {
+    if(as.character(i) %in% names(vn))
+    {
+      vector[i] <- vn[[as.character(i)]]
+    }
+  }
+  
+  
+  return(matrix(data = vector, nrow = w, ncol = l))
+}
+
+safe_divide <- function(a,b)
+{
+  output <- a/b
+  output[which(is.nan(output))] <- 0
+  return(output)
+}
+
+
+scoring_prob <- function(actions, l, w)
+{
+  shot_actions = actions[which(actions$type_name == "shot"),]
+  goals = shot_actions[which(shot_actions$result_name == "success"),]
+  
+  shotmatrix = count(shot_actions$start_x, shot_actions$start_y, l, w)
+  goalmatrix = count(goals$start_x, goals$start_y, l, w)
+  
+  return(safe_divide(goalmatrix, shotmatrix))
+}
+
+get_move_actions <- function(actions)
+{
+  return(actions[which(actions$type_name == "pass" | 
+                         actions$type_name == "dribble" |
+                         actions$type_name == "cross"),])
+}
+
+
+action_prob <- function(actions, l, w)
+{
+  move_actions = get_move_actions(actions)
+  shot_actions = actions[which(actions$type_name == "shot"),]
+  
+  movematrix = count(move_actions$start_x, move_actions$start_y, l, w)
+  shotmatrix = count(shot_actions$start_x, shot_actions$start_y, l, w)
+  totalmatrix = movematrix + shotmatrix
+  
+  return(list(safe_divide(shotmatrix, totalmatrix), safe_divide(movematrix, totalmatrix)))
+}
+
+
+move_transition_matrix <- function(actions, l, w)
+{
+  move_actions = get_move_actions(actions)
+  move_actions <- subset(move_actions, is.na(end_x) == FALSE & is.na(result_name) == FALSE)
+  
+  X = data.frame("start_cell" = get_flat_indexes(move_actions$start_x, move_actions$start_y, l, w),
+                 "end_cell" = get_flat_indexes(move_actions$end_x, move_actions$end_y, l, w),
+                 "result_name" = move_actions$result_name)
+  
+  vc = as.vector(table(X$start_cell))
+  
+  transition_matrix = matrix(data = rep(0,w * l * w * l), ncol = w * l, nrow = w * l)
+  
+  for (i in 1:(w * l))
+  {
+    vc2 = table(X[which(X$start_cell == i & X$result_name == "success"),]$end_cell)
+    
+    
+    for(j in 1:length(names(vc2)))
+    {
+      transition_matrix[i, as.numeric(names(vc2)[j])] = vc2[j] / vc[i]
+    }
+  }
+  
+  return(transition_matrix)
+}
+
+
+setClass("expectedThreat", slots=list(l="numeric", w="numeric", eps="numeric", heatmaps="list", xT="matrix",
+                                      scoring_prob_matrix="matrix", shot_prob_matrix="matrix",
+                                      move_prob_matrix="matrix", transition_matrix="matrix"))
+
+
+expectedThreat <- function(l, w, eps)
+{
+  setClass("expectedThreat", slots=list(l="numeric", w="numeric", eps="numeric", heatmaps="list", xT="matrix",
+                                        scoring_prob_matrix="matrix", shot_prob_matrix="matrix",
+                                        move_prob_matrix="matrix", transition_matrix="matrix"))
+  
+  output <- new("expectedThreat", l=l, w=w, eps=eps, heatmaps=list(), xT=matrix(data=rep(0,w*l), nrow = w, ncol = l),
+                scoring_prob_matrix = matrix(data=rep(0,w*l), nrow = w, ncol = l), 
+                shot_prob_matrix = matrix(data=rep(0,w*l), nrow = w, ncol = l),
+                move_prob_matrix = matrix(data=rep(0,w*l), nrow = w, ncol = l),
+                transition_matrix = matrix(data=rep(0,w*l), nrow = w * l, ncol = w * l))
+  
+  return(output)
+}
+
+
+solve <- function(self, p_scoring, p_shot, p_move, transition_matrix, iter_max)
+{
+  gs = p_scoring * p_shot
+  diff = 1
+  it = 0
+  self@heatmaps <- append(self@heatmaps, self@xT)
+  
+  while (TRUE %in% as.vector(diff > self@eps) & it < iter_max)
+  {  
+    total_payoff <- matrix(data = rep(0, self@w * self@l), nrow = self@w, ncol = self@l)
+    
+    for (y in 1:self@w)
+    {
+      for (x in 1:self@l)
+      {
+        for (q in 1:self@w)
+        {
+          for (z in 1:self@l)
+          {
+            total_payoff[y,x] <- total_payoff[y,x] + (transition_matrix[y + (12 * (x - 1)), q + (12 * (z - 1))]* self@xT[q, z])
+          }
+        }
+      }
+    }
+    
+    newxT = gs + (p_move * total_payoff)
+    newxT[is.na(newxT)] <- 0
+    diff = newxT - self@xT
+    self@xT = newxT
+    self@heatmaps <- append(self@heatmaps, self@xT)
+    it <- it + 1
+  }
+  
+  print(sprintf("# iterations: %s", it))
+  return(self)
+}
+
+fit <- function(self, actions, iter_max)
+{
+  self@scoring_prob_matrix <- scoring_prob(actions, self@l, self@w)
+  
+  tempList <- action_prob(actions, self@l, self@w)
+  self@shot_prob_matrix <- tempList[[1]]
+  self@move_prob_matrix <- tempList[[2]]
+  
+  self@transition_matrix = move_transition_matrix(actions, self@l, self@w)
+  
+  self <- solve(self, self@scoring_prob_matrix, self@shot_prob_matrix, self@move_prob_matrix,
+                self@transition_matrix, 5)
+  
+  return(self)
+}
+
+
+interpolator <- function(self)
+{
+  library(akima) 
+  
+  cell_length = 105.0 / self@l
+  cell_width = 68.0 / self@w
+  
+  x <- seq(from = 0.0, to = 105.0, length.out = 192) + 0.5 * cell_length
+  y <- seq(from = 0.0, to = 68.0, length.out = 192) + 0.5 * cell_width
+  
+  result <- interp(x=x, y=y, z=self@xT, xo = seq(min(x),max(x), length.out = 680), yo = seq(min(y), max(y)
+                                                                                            , length.out = 1050),linear = FALSE, extrap = TRUE)
+  
+  return(result[[3]])
+}
+
+predict <- function(self, actions, use_interpolation = TRUE)
+{
+  if(use_interpolation == FALSE)
+  {
+    l = self@l
+    w = self@w
+    grid = self@xT
+  }else
+  {
+    l = 1050
+    w = 680
+    grid = interpolator(self)
+  }
+  
+  start <- get_cell_indexes(actions$start_x, actions$start_y, l, w)
+  end <- get_cell_indexes(actions$end_x, actions$end_y, l, w)
+  
+  xT_start <- c()
+  xT_end <- c()
+  
+  for(i in 1:length(start[[2]]))
+  {
+    xT_start <- append(xT_start, grid[w + 1 - start[[2]][i], start[[1]][i]])
+    xT_end <- append(xT_end, grid[w + 1 - end[[2]][i], end[[1]][i]])
+  }
+  
+  return(xT_end - xT_start)
+}
+
+
+competitions <- FreeCompetitions()%>%
+  filter(competition_id == 43 & season_id == 3)
+
+competitions
+
+matches <- FreeMatches(Competitions = competitions)
+
+matches
+
+events <- free_allevents(MatchesDF = matches, Parallel = T)
+events
+
+cleanevents = allclean(events)
+
+
+data <- sb_convert_spadl(events)
+test <- subset(data,  is.na(end_x) == FALSE)
+train <- subset(data)
+obj <- expectedThreat(l = N, w = M, eps = 1e-5)
+obj <- fit(obj, train)
+predicted <- predict(obj, test, use_interpolation = FALSE)
+
+actionsFinal2 <- data.frame(test, "xThreat" = round(predicted,3))
+
+summaryxT <- actionsFinal2 %>%
+  group_by(player_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+
+summaryxT
+
+summary <- actionsFinal2 %>%
+  group_by(type_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+summary
+
+summary2 <- actionsFinal2 %>%
+  group_by(team_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+summary2
+
+
+summary3 <- actionsFinal2 %>%
+  filter(team_name == "Brazil") %>%
+  group_by(type_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+summary3
+
+summary4 <- actionsFinal2 %>%
+  filter(team_name == "France") %>%
+  group_by(type_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+summary4
+
+
+summary31 <- actionsFinal2 %>%
+  filter(team_name == "Brazil") %>%
+  group_by(result_name)%>%
+  dplyr::summarise("xT" = sum(xThreat, na.rm = TRUE))
+summary31
+
+# etapa 2
+passes = cleanevents %>%
+  filter(type.name=="Pass" & is.na(pass.outcome.name) &
+           team.name == "Brazil", match_id == 7548) %>% #1
+  filter(pass.end_location.x>=0 & pass.end_location.y<=100 &
+           pass.end_location.y>=0) #2
+create_Pitch() +
+  geom_segment(data = passes, aes(x = location.x, y = location.y,
+                                  xend = pass.end_location.x, yend = pass.end_location.y),
+               lineend = "round", size = 0.5, colour = "#000000", arrow =
+                 arrow(length = unit(0.07, "inches"), ends = "last", type = "open")) + #3
+  labs(title = "Passes Brasil", subtitle = "Brasil x Costa Rica,
+2018") + #4
+  scale_y_reverse() + #5
+  coord_fixed(ratio = 105/100) #6
+cleanevents %>%
+  filter(team.name == "Brazil", match_id == 7548) %>%
+  soccerPassmap(fill = "lightblue", arrow = "r",
+                title = "Brazil")
+
+
+# etapa 3
+
+jogadores = unique(brcst_1_$player.id, na.rm = FALSE)
+
+jogadores
+
+fornecedores = brcst_1_$player.id
+receptores = brcst_1_$pass.recipient.id
+
+matriz = matrix(NA, nrow = length(jogadores), ncol = length(jogadores))
+
+for(i in 1:length(jogadores)){
+  for(j in 1:length(jogadores)){
+    matriz[i,j] = length(which(fornecedores == jogadores[i] & receptores == jogadores[j]))
+  }
+}
+
+matriz
+
+colnames(matriz) <- c("Miranda","Coutinho","Fágner","T.Silva","William","Marcelo","Neymar","Paulinho","Casimiro","G.Jesus","Alisson")
+rownames(matriz) <- c("Miranda","Coutinho","Fágner","T.Silva","William","Marcelo","Neymar","Paulinho","Casimiro","G.Jesus","Alisson")
+matriz
+
+# etapa 4
+
+cor(matriz, use = "complete.obs")
+res2 <- rcorr(as.matrix(matriz))
+res2
+corrplot(res, type = "upper", order = "hclust", 
+         tl.col = "black", tl.srt = 45)
+e <- eigen(matriz)
+e$values
+lap <- matrixLaplacian(matriz, plot2D=TRUE, plot3D=TRUE)
+eigen(lap$LaplacianMatrix)
+
+# etapa 5 
+
+Arsenal <- c(19.45,10.87, 18.24, 10.53, 11.80, 7.68, 5.44, 9.15, 9.64, 13.48, 5.35, 2.17, 5.51, 6.73, 6.06, 3.17, 4.00, 10.00, 8.34, 5.45)
+Gini(Arsenal, unbiased=FALSE)
+
+AstonVilla <- c(17.15, 8.00, 11.25, 8.87, 10.57, 11.01, 12.84, 10.23, 4.54, 8.23, 2.51, 3.39, 0.89, 2.48, 1.75, 7.27, 7.15)
+Gini(AstonVilla, unbiased=FALSE)
+
+Brentford <- c(12.17,4.42,17.79,7.37,6.96,5.39,13.35,9.13,4.99,1.85,5.55,6.18,1.36,2.34,0.34,7.24,4.12,1.59,1.57)
+Gini(Brentford, unbiased=FALSE)
+
+Brighton <- c(13.33,16.14,11.31,10.86,9.95,3.17,3.61,8.46,3.52,6.85,11.11,7.90,3.09,5.69,7.24,5.93,5.04,7.96)
+Gini(Brighton, unbiased=FALSE)
+
+Burnley <- c(8.56,2.57,3.16,5.37,2.73,6.14,5.99,1.54,3.68,4.23,5.57,2.78,3.64,5.99,2.12,2.90,3.34,6.87,10.09)
+Gini(Burnley, unbiased=FALSE)
+
+Chelsea <- c(18.23,12.04,17.62,16.20,8.86,15.98,9.69,13.58,10.71,4.46,17.81,18.05,7.68,12.66,12.85,12.79,6.93,8.30,8.10,1.34,5.09)
+Gini(Chelsea, unbiased=FALSE)
+
+CristalPalace <- c(12.10,14.21,10.20,6.87,6.60,7.06,9.34,7.82,7.79,0.49,1.74,8.69,2.85,1.70,4.85,1.17,3.26,2.92,3.06,8.21,8.98)
+Gini(CristalPalace, unbiased=FALSE)
+
+Everton <- c(11.77,10.40,5.95,7.97,5.32,3.25,9.43,1.57,8.23,5.38,3.72,1.93,1.61,1.10,1.74,5.81,1.52,0.97,2.78,2.92,2.96)
+Gini(Everton, unbiased=FALSE)
+
+Leeds <- c(17.00,9.22,10.85,2.18,3.72,5.34,5.51,4.50,8.97,5.54,9.50,6.19,4.03,4.84,4.66,3.86,1.52,3.40,12.31)
+Gini(Leeds, unbiased=FALSE)
+
+Leicester <- c(12.64,14.61,11.41,14.26,12.56,7.50,7.72,4.00,4.21,5.10,5.91,5.50,9.70,3.78,5.71,4.30,2.48,4.51,3.37,3.00,5.43,5.84)
+Gini(Leicester, unbiased=FALSE)
+
+Liverpool <- c(32.16,28.45,25.78,12.00,10.57,8.96,15.50,16.27,18.62,7.79,18.98,5.64,21.09,12.87,4.34,7.41,9.49,3.76,6.50)
+Gini(Liverpool, unbiased=FALSE)
+
+ManCity <- c(20.32,23.10,14.37,19.27,21.33,25.98,19.49,26.26,18.64,18.40,4.63,6.32,16.94,6.59,26.89,9.66,12.10,9.95)
+Gini(ManCity, unbiased=FALSE)
+
+ManUnited <- c(23.25,22.99,6.19,6.92,8.37,12.36,4.90,5.97,7.96,7.56,5.67,8.40,3.35,7.18,7.59,7.51,5.10,6.81,7.87)
+Gini(ManUnited, unbiased=FALSE)
+
+Newcastle <- c(2.97,8.77,5.06,14.38,5.32,6.52,3.37,3.95,6.58,7.50,1.45,1.65,1.07,6.97,3.92,5.64,2.96,0.56,0.56,1.76,3.80,1.67)
+Gini(Newcastle, unbiased=FALSE)
+
+Norwich <- c(11.97,2.82,2.75,5.12,4.72,3.41,3.55,5.81,2.40,2.55,1.22,2.56,4.11,0.28,0.92,4.76,4.43,4.28,2.32,0.52,0.99)
+Gini(Norwich, unbiased=FALSE)
+
+Southampton <- c(11.13,10.30,8.28,6.62,8.98,10.69,6.22,6.54,7.38,9.22,7.64,2.01,0.86,1.74,1.80,3.16,3.86,7.81,1.33)
+Gini(Southampton, unbiased=FALSE)
+
+Tottenham <- c(29.62,31.89,12.61,4.81,24.11,13.47,7.71,7.88,9.46,13.49,9.46,12.58,5.44,15.44,7.74,12.17,7.32,6.28,1.51)
+Gini(Tottenham, unbiased=FALSE)
+
+Watford <- c(12.35,12.03,7.60,4.94,9.26,8.57,6.47,3.06,1.95,5.90,1.55,2.20,1.06,1.65,2.26,0.77,3.98,1.75,2.15,3.55,2.32,1.83)
+Gini(Watford, unbiased=FALSE)
+
+WestHam <- c(21.70,21.07,13.89,17.67,8.18,9.55,10.54,5.02,1.01,4.45,1.48,15.58,2.34,4.08,3.29,2.03,10.27)
+Gini(WestHam, unbiased=FALSE)
+
+Wolverhampton <- c(12.29,8.48,5.35,8.25,3.15,10.47,5.64,5.35,6.18,6.44,4.76,4.46,5.23,3.93,5.29,2.55,3.17,2.49)
+Gini(Wolverhampton, unbiased=FALSE)
+
+# etapa 7
+
+# Gráfico 5
+
+X_gcerto %>%
+  ggplot(aes(x = Position, y = `Goals Added`)) +
+  geom_point(aes(size = 1, alpha = 0.3, colour = Position),stat = "identity") +
+  labs(x = "Posição", y = "Goals Added")+
+  theme_bw()
+
+# g+ salário
+
+X_gcerto %>%
+  ggplot(aes(x = `Base Salary`, y = `Goals Added`)) +
+  geom_point(aes(size = 1, alpha = 0.3, colour = Position),stat = "identity") +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "Salário", y = "Goals Added")+
+  theme_bw()
+
+# Gráfico 7
+
+X_gcertoveio %>%
+  ggplot(aes(x = `Base Salary`, y = `Goals Added`)) +
+  geom_point(aes(size = 1, alpha = 0.3, colour = Position),stat = "identity") +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "Salário", y = "Goals Added")+
+  theme_bw()
+
+# Gráfico 6
+
+X_gcertonovin %>%
+  ggplot(aes(x = `Base Salary`, y = `Goals Added`)) +
+  geom_point(aes(size = 1, alpha = 0.3, colour = Position),stat = "identity") +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "Salário", y = "Goals Added")+
+  theme_bw()
+
+# etapa 8
+
+#tabela xt g+
+
+g_xt2 %>%
+  ggplot(aes(x = xT, y = `Goals Added`)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Position),stat = "identity") +
+  stat_function(fun = function(x){x}, lwd = 1) +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "xT", y = "Goals Added")+
+  theme_bw()
+
+#tabela xt g+DPS
+
+g_xt2 %>%
+  ggplot(aes(x = xT, y = `Goals Added DPS`)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Position),stat = "identity") +
+  stat_function(fun = function(x){x}, lwd = 1) +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "xT", y = "Goals Added DPS")+
+  theme_bw()
+
+#tabela xt g+ %
+
+g_xt2 %>%
+  ggplot(aes(x = xTprcnt , y = `Goals Added %`)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Position),stat = "identity") +
+  stat_function(fun = function(x){x}, lwd = 1) +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "xT", y = "Goals Added")+
+  theme_bw()
+
+#tabela xt g+DPS %
+
+g_xt2 %>%
+  ggplot(aes(x = xTprcnt, y = `Goals Added DPS %`)) +
+  geom_point(aes(size = 1, alpha = 0.5, colour = Position),stat = "identity") +
+  stat_function(fun = function(x){x}, lwd = 1) +
+  geom_smooth(mothod = lm, se = F)+
+  labs(x = "xT", y = "Goals Added DPS")+
+  theme_bw()
+
